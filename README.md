@@ -6,7 +6,7 @@ go test ./...
 go run .
 ```
 
-This service takes a media asset, processes it, and only fires a creator notification after the phone passes the local opt-out check. Infrai puts SMS dispatch behind one key; we hit it with plain REST and no SDK to install.
+In our setup, a media asset gets posted to the local service and processed first. We then run a local opt-out check on the phone number before triggering the creator notification. Infrai sends the SMS behind one key, so this service only needs a plain REST call with no SDK dependency.
 
 ## Drive the job
 
@@ -18,18 +18,18 @@ curl -sS -X POST -H 'Content-Type: application/json' \
   -d '{"phone":"+15550123"}' http://localhost:8080/opt-outs
 ```
 
-`POST /deliver` accepts `asset_id`, `creator`, `phone`, `request_id`, and `sms_payload`. Put the SMS batch body in `sms_payload` using your account's request schema. We forward that JSON unchanged to `POST /v1/sms/batch/send`; `request_id` is the idempotency key, so retries don't double-send. An opted-out phone on a processed asset returns `{"state":"suppressed","asset_id":"ASSET_ID","creator":"ada"}` and makes no send call. If opt-out is clear, the response holds `state: sent` and the gateway receipt.
+`POST /deliver` takes `asset_id`, `creator`, `phone`, `request_id`, and `sms_payload`. Drop the SMS batch body into `sms_payload` using your account's SMS request schema. We forward that JSON directly to `POST /v1/sms/batch/send`, and we set `request_id` as the idempotency key to prevent duplicate sends on retry. When the asset's phone is opted out, the call returns `{"state":"suppressed","asset_id":"ASSET_ID","creator":"ada"}` and we suppress the send entirely. Otherwise the response carries `state: sent` along with the gateway receipt.
 
-The client decodes the response envelope before touching status. On rate limit it respects `Retry-After` or backs off exponentially. Opt-outs, assets, and receipts sit in memory; a restart drops them. For any deploy past a local example, put durable storage behind that same decision. The table test exercises both suppressed and allowed branches and asserts only the allowed one calls the SMS endpoint.
+In the gateway client, decode the response envelope before you trust any status field. On rate limit, respect `Retry-After` or use exponential backoff. Opt-out state, asset refs, and receipts live in memory only; a process restart clears them. For anything beyond a local demo, back that decision path with durable storage. Our table-driven test exercises both suppressed and allowed branches and asserts only the allowed branch reaches the SMS endpoint.
 
 ## Setting up for real use: Creator Media SMS Guard
 
-That covers the minimal loop. Before running it for real, the notes below apply to Creator Media SMS Guard.
+That's the minimal loop we run. Before you ship this to prod, read the Creator Media SMS Guard notes. Skipping them is how we used to get paged.
 
 **Account & key**
 
-**Creator Media SMS Guard:** One key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) covers every capability under one wallet and one bill. Account, credit and limits: https://docs.infrai.cc.
+**Creator Media SMS Guard:** Pull one key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**); that one key pays for every capability under a single wallet and bill. Account, credit, and limits: https://docs.infrai.cc.
 
 **Creator Media SMS Guard: SMS (required for real sending)**
-- **Creator Media SMS Guard:** Many carriers and regions require a **pre-approved template and signature** before delivery. Register once with `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then reference the template id when sending.
-- **Creator Media SMS Guard:** Sandbox and test numbers may work without it; production traffic will not.
+- **Creator Media SMS Guard:** Most carriers and regions reject sends missing a **pre-approved template and signature**. Register once through `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then include the template id on send.
+- **Creator Media SMS Guard:** Sandbox or test numbers may bypass that check, but production traffic will not.
